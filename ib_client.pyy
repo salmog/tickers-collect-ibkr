@@ -1,0 +1,74 @@
+from ib_insync import IB, Stock
+import time
+import random
+
+HOST = "127.0.0.1"
+PORT = 7497  # TWS / IB Gateway paper port
+BASE_CLIENT_ID = 7  # safe starting point
+
+
+def connect_ib():
+    """
+    Stable IB connection:
+    - unique clientId per process
+    - disables autoBind issues
+    """
+    ib = IB()
+
+    # IMPORTANT: avoid "clientId already in use"
+    client_id = BASE_CLIENT_ID + random.randint(0, 1000)
+
+    try:
+        ib.connect(
+            HOST,
+            PORT,
+            clientId=client_id,
+            readonly=False,
+            timeout=10
+        )
+        print(f"✅ IB CONNECTED (clientId={client_id})")
+        return ib
+
+    except Exception as e:
+        print(f"❌ IB connect failed: {e}")
+        time.sleep(5)
+        raise
+
+
+def make_contract(symbol: str):
+    return Stock(symbol, "SMART", "USD")
+
+
+def fetch_history(ib: IB, symbol: str,
+                  duration="2 D",
+                  bar_size="5 mins",
+                  what="TRADES"):
+    """
+    Safe historical fetch with pacing protection
+    """
+    contract = make_contract(symbol)
+
+    try:
+        bars = ib.reqHistoricalData(
+            contract,
+            endDateTime="",
+            durationStr=duration,
+            barSizeSetting=bar_size,
+            whatToShow=what,
+            useRTH=True,
+            formatDate=1,
+            keepUpToDate=False
+        )
+
+        ib.sleep(1)
+
+        if not bars:
+            return None
+
+        import pandas as pd
+        df = util.df(bars)
+        return df
+
+    except Exception as e:
+        print(f"⚠️ fetch_history error {symbol}: {e}")
+        return None

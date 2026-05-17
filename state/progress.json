@@ -1,0 +1,28 @@
+{
+  "symbol": {
+    "status": "failed",
+    "error": "'NoneType' object has no attribute 'empty'"
+  },
+  "VMET": {
+    "error": "Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 185",
+    "1h": "2026-05-15 19:00:00"
+  },
+  "WBTN": {
+    "error": "Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 624",
+    "1h": "2026-05-15 19:00:00"
+  },
+  "WEN": {
+    "error": "Tz-aware datetime.datetime cannot be converted to datetime64 unless utc=True, at position 823",
+    "1h": "2026-05-15 19:00:00"
+  },
+  "WIT": {
+    "status": "ok",
+    "1h": "2026-05-15 19:00:00"
+  },
+  "chunks": {
+    "VMET": 16,
+    "WBTN": 16,
+    "WEN": 16,
+    "WIT": 16
+  }
+}
