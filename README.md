@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # MITLoop - IBKR Historical Data Engine
 
 ## Overview
@@ -140,3 +141,6 @@ chmod +x bootstrap_project.sh
 Run:
 
 ./bootstrap_project.sh
+=======
+# tickers-collect-ibkr
+>>>>>>> 2aa81033fd19f808be17d6ad99e0786218d99732
