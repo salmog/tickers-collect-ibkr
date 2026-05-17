@@ -4,7 +4,6 @@ import random
 import pandas as pd
 import os
 
-# 🔥 NEW: Read from environment variables, fallback to localhost if not set
 HOST = os.getenv("IB_GATEWAY_HOST", "127.0.0.1")
 PORT = int(os.getenv("IB_GATEWAY_PORT", 4001))
 
@@ -23,6 +22,10 @@ def connect_ib():
         raise
 
 def fetch_history(ib, symbol, duration, bar_size, use_rth=True):
+    # 🔥 FIX 1: The Zombie Connection Killer
+    if not ib.isConnected():
+        raise ConnectionError("IB Gateway disconnected. Forcing a hard restart.")
+
     contract = Stock(symbol, "SMART", "USD")
     
     try:
@@ -50,7 +53,6 @@ def fetch_history(ib, symbol, duration, bar_size, use_rth=True):
         else:
             df['date'] = pd.to_datetime(df['date'], utc=True)
             
-        # Tag RTH vs Pre/Post Market
         eastern_times = df['date'].dt.tz_convert('US/Eastern')
         is_after_open = (eastern_times.dt.hour > 9) | ((eastern_times.dt.hour == 9) & (eastern_times.dt.minute >= 30))
         is_before_close = (eastern_times.dt.hour < 16)
