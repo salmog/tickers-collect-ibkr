@@ -1,0 +1,208 @@
+cat << 'EOF' > /root/MITLoop/research_scanners/s1_body_strict_scanner.py
+import os
+import glob
+import pandas as pd
+import numpy as np
+import datetime
+import warnings
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# ========================= CONFIG =========================
+DATA_DIR = "/home/shay/autotrade_dev/fetch_candles_ibkr/historical_data/"
+STARTING_CAPITAL = 100000.0
+RISK_PCT = 0.01          # 1% risk per trade
+MAX_CONCURRENT_POSITIONS = 10
+
+# =========================================================
+
+def load_monthly_trend(symbol):
+    m_path = os.path.join(DATA_DIR, f"{symbol}_monthly.csv")
+    if not os.path.exists(m_path):
+        return {}
+    try:
+        df = pd.read_csv(m_path)
+        df.columns = df.columns.str.lower()
+        if 'close' not in df.columns:
+            return {}
+        date_col = 'date' if 'date' in df.columns else 'timestamp'
+        df[date_col] = pd.to_datetime(df[date_col])
+        df['yyyy_mm'] = df[date_col].dt.strftime('%Y-%m')
+        df['sma10'] = df['close'].rolling(10).mean()
+        return dict(zip(df['yyyy_mm'], df['close'] > df['sma10']))
+    except:
+        return {}
+
+def scan_ticker(filepath):
+    symbol = os.path.basename(filepath).split('_')[0].split('.')[0]
+    
+    try:
+        df = pd.read_csv(filepath)
+        df.columns = df.columns.str.lower()
+        if 'close' not in df.columns:
+            return None, None
+
+        date_col = 'date' if 'date' in df.columns else 'timestamp'
+        df[date_col] = pd.to_datetime(df[date_col]).dt.date
+        df['yyyy_mm'] = pd.to_datetime(df[date_col]).dt.strftime('%Y-%m')
+
+        # Indicators
+        df['atr'] = (df['high'] - df['low']).rolling(14).mean()
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['sma50'] = df['close'].rolling(50).mean()
+        df['vol_avg'] = df['volume'].rolling(20).mean()
+
+        # Structural Resistance (Body of pivot highs)
+        df['rolling_max_11'] = df['high'].rolling(11).max()
+        df['is_pivot'] = df['high'].shift(5) == df['rolling_max_11']
+        df['body_max'] = df[['open', 'close']].max(axis=1)
+        df['swing_body_res'] = np.where(df['is_pivot'], df['body_max'].shift(5), np.nan)
+        df['swing_body_res'] = pd.Series(df['swing_body_res']).ffill()
+
+        m_map = load_monthly_trend(symbol)
+        recent_df = df.iloc[-60:].copy()
+        if recent_df.empty or len(recent_df) < 20:
+            return None, None
+
+        setup_active = False
+        body_level = 0.0
+        breakout_vol = 0.0
+        weeks_above = 0
+        breakout_index = -1
+
+        for i in range(1, len(recent_df)):
+            row = recent_df.iloc[i]
+            prev_row = recent_df.iloc[i-1]
+            
+            macro_bull = m_map.get(row['yyyy_mm'], False)
+            current_body = row['swing_body_res']
+
+            if pd.isna(current_body):
+                continue
+
+            if not setup_active:
+                is_liquid = (row['close'] >= 5.0) and ((row['close'] * row['vol_avg']) >= 5_000_000)
+                is_breakout = row['close'] > current_body and prev_row['close'] <= current_body
+                is_zigzag = row['close'] <= (row['ema20'] * 1.25)
+                is_high_vol = row['volume'] > (row['vol_avg'] * 1.5)
+                is_aligned = row['ema20'] > row['sma50']
+                is_sloping_up = i >= 4 and row['ema20'] > recent_df.iloc[i-4]['ema20']
+
+                if is_liquid and is_breakout and macro_bull and is_zigzag and is_high_vol and is_aligned and is_sloping_up:
+                    setup_active = True
+                    body_level = current_body
+                    breakout_vol = row['volume']
+                    breakout_index = i
+                    weeks_above = 0
+                    continue
+
+            if setup_active:
+                if row['close'] < row['sma50'] or weeks_above > 30:
+                    setup_active = False
+                    continue
+
+                weeks_above += 1
+
+                # === RETEST TRIGGER (Buy Signal) ===
+                if i == len(recent_df) - 1:  # Last candle = today
+                    if row['low'] <= body_level and weeks_above >= 4 and row['volume'] < breakout_vol * 1.1:
+                        stop_loss = body_level - (1.1 * row['atr'])
+                        risk_per_share = row['close'] - stop_loss
+                        
+                        if risk_per_share > 0:
+                            risk_amount = STARTING_CAPITAL * RISK_PCT
+                            shares = int(risk_amount / risk_per_share)
+                            cash_alloc = shares * row['close']
+
+                            return {
+                                "Ticker": symbol,
+                                "Action": "BUY",
+                                "Entry Target": round(body_level, 2),
+                                "Current Price": round(row['close'], 2),
+                                "Stop Loss": round(stop_loss, 2),
+                                "Risk %": f"{RISK_PCT*100}%",
+                                "Shares": shares,
+                                "Cash Allocation": round(cash_alloc, 2),
+                                "Weeks Above": weeks_above,
+                                "Reason": "S1 Body Strict - Retest with volume contraction"
+                            }, None
+
+        # === PRE-RETEST WATCHLIST (Alert before retest) ===
+        if setup_active and weeks_above >= 4:
+            last_row = recent_df.iloc[-1]
+            distance_to_level = (last_row['close'] - body_level) / body_level * 100
+            
+            if -8 <= distance_to_level <= 5:  # Close to the level
+                return None, {
+                    "Ticker": symbol,
+                    "Status": "In Setup - Watch for Retest",
+                    "Body Level": round(body_level, 2),
+                    "Current Price": round(last_row['close'], 2),
+                    "Distance %": round(distance_to_level, 2),
+                    "Weeks Above": weeks_above,
+                    "ATR": round(last_row['atr'], 2)
+                }
+
+        return None, None
+
+    except Exception as e:
+        return None, None
+
+def run_scanner():
+    weekly_files = glob.glob(os.path.join(DATA_DIR, "*_weekly.csv"))
+    print(f"🚀 Running S1 Body Strict Scanner on {len(weekly_files)} tickers...\n")
+    
+    buy_signals = []
+    watchlist = []
+
+    for idx, file in enumerate(weekly_files, 1):
+        if idx % 1000 == 0:
+            print(f" > Processing: {idx} / {len(weekly_files)}...")
+            
+        buy_signal, watch = scan_ticker(file)
+        if buy_signal:
+            buy_signals.append(buy_signal)
+        if watch:
+            watchlist.append(watch)
+
+    # === OUTPUT ===
+    print("\n" + "="*80)
+    print("🔴 BUY SIGNALS (Retest Triggered)")
+    print("="*80)
+    if buy_signals:
+        for sig in buy_signals:
+            print(f"Ticker: {sig['Ticker']}")
+            print(f"Action:     {sig['Action']}")
+            print(f"Entry:      ${sig['Entry Target']}")
+            print(f"Current:    ${sig['Current Price']}")
+            print(f"Stop Loss:  ${sig['Stop Loss']}")
+            print(f"Shares:     {sig['Shares']:,}")
+            print(f"Allocation: ${sig['Cash Allocation']:,.2f} ({sig['Risk %']} risk)")
+            print(f"Weeks Above: {sig['Weeks Above']}")
+            print(f"Reason:     {sig['Reason']}")
+            print("-" * 60)
+    else:
+        print("No active retest buy signals at the moment.")
+
+    print("\n" + "="*80)
+    print("🟡 WATCHLIST - Potential Retest Setups (Prepare to Buy)")
+    print("="*80)
+    if watchlist:
+        for w in sorted(watchlist, key=lambda x: abs(x['Distance %'])):
+            print(f"Ticker: {w['Ticker']}")
+            print(f"Body Level:   ${w['Body Level']}")
+            print(f"Current:      ${w['Current Price']}")
+            print(f"Distance:     {w['Distance %']}%")
+            print(f"Weeks Above:  {w['Weeks Above']}")
+            print(f"ATR:          ${w['ATR']}")
+            print("-" * 50)
+    else:
+        print("No setups currently close to retest.")
+
+    print(f"\nScan completed at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+if __name__ == "__main__":
+    run_scanner()
+EOF
+
+python3 /root/MITLoop/research_scanners/s1_body_strict_scanner.py
